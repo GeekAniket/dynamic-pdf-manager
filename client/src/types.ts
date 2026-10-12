@@ -1,0 +1,4 @@
+export type FontName = 'Arial' | 'Roboto' | 'Times New Roman' | 'Open Sans'
+export type Template = { _id: string; name: string; description: string; thumbnail: string; category: string; isActive: boolean }
+export type Config = { _id?: string; templateId: string; isDefault: boolean; primaryColor: string; secondaryColor: string; headerFont: FontName; bodyFont: FontName; footerFont: FontName; fontSize: number; headerBold: boolean; bodyBold: boolean; footerBold: boolean; headerAlign: 'left'|'center'|'right'; bodyAlign: 'left'|'center'|'right'; footerAlign: 'left'|'center'|'right'; logoDataUrl?: string }
+export const initialConfig = (templateId: string): Config => ({templateId,isDefault:false,primaryColor:'#4f46e5',secondaryColor:'#a5b4fc',headerFont:'Roboto',bodyFont:'Arial',footerFont:'Open Sans',fontSize:10,headerBold:true,bodyBold:false,footerBold:false,headerAlign:'left',bodyAlign:'left',footerAlign:'center'})

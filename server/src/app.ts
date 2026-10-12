@@ -1,0 +1,26 @@
+import express,{type NextFunction,type Request,type Response} from 'express'
+import cors from 'cors'
+import helmet from 'helmet'
+import rateLimit from 'express-rate-limit'
+import mongoose from 'mongoose'
+import {z} from 'zod'
+import {TemplateModel,TemplateConfiguration} from './models.js'
+import {configSchema,pdfSchema} from './validation.js'
+import {generatePdf} from './pdfService.js'
+const app=express()
+app.disable('x-powered-by')
+app.use(helmet({crossOriginResourcePolicy:{policy:'cross-origin'},contentSecurityPolicy:false}))
+app.use(cors({origin:(process.env.CLIENT_ORIGIN||'http://localhost:5173').split(',').map(s=>s.trim()),exposedHeaders:['Content-Disposition']}))
+app.use(express.json({limit:'2mb'}))
+app.use('/api/pdf',rateLimit({windowMs:60_000,limit:20,standardHeaders:true,legacyHeaders:false}))
+const asyncRoute=(fn:(req:Request,res:Response,next:NextFunction)=>Promise<unknown>)=>(req:Request,res:Response,next:NextFunction)=>Promise.resolve(fn(req,res,next)).catch(next)
+app.get('/api/health',(_req,res)=>res.json({status:'ok',database:mongoose.connection.readyState===1?'connected':'disconnected'}))
+app.get('/api/templates',asyncRoute(async(_req,res)=>{const items=await TemplateModel.find({isActive:true}).sort({createdAt:1}).lean();res.json(items)}))
+app.get('/api/templates/default',asyncRoute(async(_req,res)=>{let config=await TemplateConfiguration.findOne({isDefault:true});if(!config){const template=await TemplateModel.findOne({isActive:true}).sort({createdAt:1});if(!template)return res.status(404).json({message:'No active templates found'});config=await TemplateConfiguration.findOneAndUpdate({templateId:template._id},{$set:{isDefault:true}}, {upsert:true,new:true})}const template=await TemplateModel.findById(config.templateId);if(!template)return res.status(404).json({message:'Default template no longer exists'});res.json({template,config})}))
+app.get('/api/templates/:id/config',asyncRoute(async(req,res)=>{if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({message:'Invalid template ID'});const config=await TemplateConfiguration.findOne({templateId:req.params.id});if(!config)return res.status(404).json({message:'Configuration not found'});res.json(config)}))
+app.post('/api/templates/save',asyncRoute(async(req,res)=>{const parsed=configSchema.safeParse(req.body);if(!parsed.success)return res.status(400).json({message:'Invalid configuration',issues:parsed.error.issues.map(i=>({field:i.path.join('.'),message:i.message}))});const input=parsed.data;if(!mongoose.isValidObjectId(input.templateId))return res.status(400).json({message:'Invalid template ID'});const template=await TemplateModel.findOne({_id:input.templateId,isActive:true});if(!template)return res.status(404).json({message:'Active template not found'});if(input.isDefault)await TemplateConfiguration.updateMany({templateId:{$ne:template._id}},{$set:{isDefault:false}});const config=await TemplateConfiguration.findOneAndUpdate({templateId:template._id},{$set:input},{new:true,upsert:true,runValidators:true,setDefaultsOnInsert:true});res.json({message:'Configuration saved',config})}))
+app.put('/api/templates/:id/default',asyncRoute(async(req,res)=>{if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({message:'Invalid template ID'});const template=await TemplateModel.findOne({_id:req.params.id,isActive:true});if(!template)return res.status(404).json({message:'Active template not found'});await TemplateConfiguration.updateMany({},{$set:{isDefault:false}});await TemplateConfiguration.findOneAndUpdate({templateId:template._id},{$set:{isDefault:true}},{upsert:true,new:true,setDefaultsOnInsert:true});res.json({message:'Default template updated',templateId:template._id})}))
+app.post('/api/pdf/generate',asyncRoute(async(req,res)=>{const parsed=pdfSchema.safeParse(req.body);if(!parsed.success)return res.status(400).json({message:'Invalid PDF request',issues:parsed.error.issues.map(i=>({field:i.path.join('.'),message:i.message}))});const {documentType,data,templateId}=parsed.data;let config;if(templateId){if(!mongoose.isValidObjectId(templateId))return res.status(400).json({message:'Invalid template ID'});config=await TemplateConfiguration.findOne({templateId})}else config=await TemplateConfiguration.findOne({isDefault:true});if(!config)return res.status(404).json({message:'No saved configuration found. Save a template first.'});const template=await TemplateModel.findById(config.templateId);if(!template||!template.isActive)return res.status(404).json({message:'Configured template is unavailable'});const pdf=await generatePdf(documentType,data,config as any);const filename=`${documentType}-${Date.now()}.pdf`;res.setHeader('Content-Type','application/pdf');res.setHeader('Content-Disposition',`attachment; filename="${filename}"`);res.setHeader('Content-Length',pdf.length);res.send(Buffer.from(pdf))}))
+app.use((_req,res)=>res.status(404).json({message:'Endpoint not found'}))
+app.use((err:unknown,_req:Request,res:Response,_next:NextFunction)=>{console.error(err);if(err instanceof z.ZodError)return res.status(400).json({message:'Validation failed',issues:err.issues});const message=process.env.NODE_ENV==='production'?'An unexpected server error occurred':err instanceof Error?err.message:'Unknown error';res.status(500).json({message})})
+export default app
